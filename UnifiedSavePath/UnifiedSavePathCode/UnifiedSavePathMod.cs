@@ -1,4 +1,6 @@
+using System.Reflection;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Modding;
 using MegaCrit.Sts2.Core.Saves;
 
@@ -11,44 +13,59 @@ public static class UnifiedSavePathMod
     {
         var harmony = new Harmony("com.unifiedsavepath.sts2");
 
+        // Patch targets differ by game version (0.107.1 lacks the last three), so each patch is optional
+
         // Patch the getter in case it's called directly
-        harmony.Patch(
-            original: AccessTools.PropertyGetter(typeof(UserDataPathProvider), nameof(UserDataPathProvider.IsRunningModded)),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(GetIsRunningModded_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.PropertyGetter(typeof(UserDataPathProvider), nameof(UserDataPathProvider.IsRunningModded)),
+            nameof(GetIsRunningModded_Prefix), "IsRunningModded getter");
 
         // Patch the setter so it can never be set to true
-        harmony.Patch(
-            original: AccessTools.PropertySetter(typeof(UserDataPathProvider), nameof(UserDataPathProvider.IsRunningModded)),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(SetIsRunningModded_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.PropertySetter(typeof(UserDataPathProvider), nameof(UserDataPathProvider.IsRunningModded)),
+            nameof(SetIsRunningModded_Prefix), "IsRunningModded setter");
 
         // Patch single-arg GetProfileDir as a safety net against JIT inlining
-        harmony.Patch(
-            original: AccessTools.Method(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileDir), new[] { typeof(int) }),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(GetProfileDir_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.Method(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileDir), new[] { typeof(int) }),
+            nameof(GetProfileDir_Prefix), "GetProfileDir(int)");
 
         // Patch two-arg GetProfileDir (forceModState) — same bypass
-        harmony.Patch(
-            original: AccessTools.Method(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileDir), new[] { typeof(int), typeof(bool?) }),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(GetProfileDir2_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.Method(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetProfileDir), new[] { typeof(int), typeof(bool?) }),
+            nameof(GetProfileDir2_Prefix), "GetProfileDir(int, bool?)");
 
         // Patch GetAccountDir — always return empty string so "modded/" prefix is never injected
-        harmony.Patch(
-            original: AccessTools.Method(typeof(UserDataPathProvider), nameof(UserDataPathProvider.GetAccountDir), new[] { typeof(bool?) }),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(GetAccountDir_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.Method(typeof(UserDataPathProvider), "GetAccountDir", new[] { typeof(bool?) }),
+            nameof(GetAccountDir_Prefix), "GetAccountDir");
 
         // Skip CopyUnmoddedSaveFilesIfNeeded entirely — no need to create/modded folder
-        harmony.Patch(
-            original: AccessTools.Method(typeof(ModManager), nameof(ModManager.CopyUnmoddedSaveFilesIfNeeded)),
-            prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), nameof(CopyUnmoddedSaveFilesIfNeeded_Prefix))
-        );
+        TryPatch(harmony,
+            () => AccessTools.Method(typeof(ModManager), "CopyUnmoddedSaveFilesIfNeeded"),
+            nameof(CopyUnmoddedSaveFilesIfNeeded_Prefix), "CopyUnmoddedSaveFilesIfNeeded");
 
         // Also force the backing field to false in case it was already set
         UserDataPathProvider.IsRunningModded = false;
+    }
+
+    private static void TryPatch(Harmony harmony, Func<MethodBase?> resolve, string prefixName, string label)
+    {
+        try
+        {
+            var original = resolve();
+            if (original == null)
+            {
+                Log.Info($"[UnifiedSavePath] {label} not present in this game version, skipping");
+                return;
+            }
+
+            harmony.Patch(original, prefix: new HarmonyMethod(typeof(UnifiedSavePathMod), prefixName));
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[UnifiedSavePath] Failed to patch {label}: {e}");
+        }
     }
 
     private static bool GetIsRunningModded_Prefix(ref bool __result)
@@ -76,10 +93,11 @@ public static class UnifiedSavePathMod
         return false;
     }
 
-    private static void GetAccountDir_Prefix(bool? forceModState, ref string __result)
+    private static bool GetAccountDir_Prefix(bool? forceModState, ref string __result)
     {
         // Always return empty string so no "modded/" prefix is ever prepended
         __result = "";
+        return false;
     }
 
     private static bool CopyUnmoddedSaveFilesIfNeeded_Prefix()

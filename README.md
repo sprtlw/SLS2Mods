@@ -6,10 +6,42 @@ A collection of quality-of-life mods for **Slay the Spire 2** (Godot 4.5.1 / C# 
 
 ### UndoAndRedo
 
-Full combat undo/redo system. Snapshots the entire combat state before each player action and restores it on demand.
+Published on the Steam Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3801936266 (update it with
+`tools/WorkshopUploader` (`update --item 3801936266 ...`); package in `nexus_packages/workshop/UndoAndRedo`).
+
+Combat undo/redo, two mechanisms kept apart:
+
+- **Fast path** (default): before every player decision the mod takes an in-place memento of the whole combat
+  model (every field of every reachable object, ~1 ms). Undo writes it back into the same objects, verifies the
+  game's own state checksum (`NetFullCombatState`), and rebuilds the combat screen from the model. About 0.1 s
+  at any depth.
+- **Replay path** (fallback, and always used for redo): the game's own combat replay recorder
+  (`CombatReplayWriter`) and replay player. Undo rebuilds the run from the save the game took when the room was
+  entered and re-feeds every recorded event except the undone decision in the game's non-interactive replay
+  mode; redo feeds the removed events back in. Used whenever the fast path has no verified memento.
 
 | Key | Action |
 |-----|--------|
+| **Left Arrow** | Undo the last player decision (card play, potion, end turn) |
+| **Right Arrow** | Redo |
+
+**Features:**
+- No hand-written state capture: anything the game can replay in multiplayer, this mod can undo
+- Works across turns (undoing an end-turn rewinds the whole enemy turn), with potions, with card-selection prompts
+- Can be pressed mid-animation or during the enemy turn
+- Unbounded undo depth within a combat; redo stack cleared by any new action
+- Verifies the state checksum after every rewind (and the event count after replays), logs to `%APPDATA%\SlayTheSpire2\logs\UndoAndRedo.log` (summary only; create `logs\UndoAndRedo.debug` for the full trace)
+- Built-in end-to-end self-test (see documentation)
+
+**Limitations:**
+- Singleplayer only
+- Fights started from an event: fast path only (no replay fallback); refused with a toast if no verified snapshot applies
+- Mods that auto-end the turn (SpeedX) end it again right after an end-of-turn is undone
+- Fast-path undo ~0.1 s; a replay-path undo rebuilds the room (~0.4 s plus ~0.12 s per earlier turn replayed)
+
+See [UndoAndRedo/DOCUMENTATION.md](UndoAndRedo/DOCUMENTATION.md) for the design and [UndoAndRedo/LESSONS.md](UndoAndRedo/LESSONS.md) for the bugs found, root causes, testing method and compatibility audit.
+
+-----|--------|
 | **Left Arrow** | Undo |
 | **Right Arrow** | Redo |
 
@@ -55,12 +87,42 @@ Forces the game to use the same save directory regardless of whether mods are lo
 
 ### UpgradeAllCards
 
+Published on the Steam Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3801790594 (subscribe on any device, including Steam Deck). Update it with `tools/WorkshopUploader` (`update --item 3801790594 ...`).
+
 Automatically grants all three egg relics (Frozen Egg, Molten Egg, Toxic Egg) at the start of every run, upgrades the starting deck, and removes the eggs from the relic pool so they won't appear again mid-run.
 
 **How it works:**
 - Postfix on `Player.PopulateStartingRelics` to add the eggs
 - Postfix on `Player.PopulateStartingDeck` to upgrade every card
-- Postfix on `RelicGrabBag.Populate` to remove eggs from the reward pool
+- Postfixes on both `RelicGrabBag.Populate` overloads to remove the eggs from the player's pool (rewards, shops, events) and from the run's shared pool (treasure chests), on `LoadFromSerializable` so runs saved before 1.2.0 are cleaned when loaded, and on `RefreshRarity` so a refilled pool stays egg-free
+
+---
+
+### RngPredictor — Random Number Predictor (随机数预测)
+
+Published on the Steam Workshop: https://steamcommunity.com/sharedfiles/filedetails/?id=3802380322 (update it with
+`tools/WorkshopUploader` (`update --item 3802380322 ...`); package in `nexus_packages/workshop/RngPredictor`, preview
+must stay under 1 MB).
+
+Inspired by the STS1 Workshop mod **随机数预测大师 / RandomNumberPredictionMaster**. Hover something with a random
+effect and a panel at the top-left shows what it will actually do, computed on an exact clone of the game's RNG
+stream (`new Rng(seed, counter)`), so the answer is the real one, not a probability.
+
+| Hover | Shows |
+|-------|-------|
+| A hand card in combat | the cards it will generate / offer (Discovery, Infernal Blade, Quasar, Jackpot, ...), the card it will pick from your hand or piles (True Grit, Cinder, Thrash, Seeker Strike, Beat Down, Catastrophe, ...), the enemies each hit will land on (Sword Boomerang, Ricochet, Flak Cannon, Volley, Bouncing Flask, ...), orbs (Chaos), potions (Alchemize), and for the Defect every card that channels or evokes (Zap, Dualcast, Tempest, Multi-Cast, Rainbow, Glacier, ...): which enemy each Lightning evoke and end-of-turn passive will hit, orbs pushed out of full slots included. Random-target attacks and orbs track predicted HP, so an enemy a hit would kill is dropped from the later draws (marked kill) |
+| A potion | Attack / Skill / Power / Colorless Potion options, Cosmic Concoction, Orobic Acid, Entropic Brew potions, Snecko Oil draws and every card's new cost |
+| The draw or discard pile | the draw pile order after the next reshuffle (top first), now and after the hand is discarded |
+| The End Turn button | which enemy each Lightning orb passive will hit this turn |
+| A deck card on a "choose a card to transform" screen (events, New Leaf, Astrolabe) | what it becomes as the 1st / 2nd / ... transformed card |
+| A Neow / ancient option that grants a relic (New Leaf, Astrolabe, Pandora's Box, Leafy Poultice, Arcane Scroll, Hefty Tablet, Lead Paperweight, Phial Holster, Alchemical Coffer, Large / Small Capsule, Toy Box, Calling Bell, Cauldron, Neow's Bones, Sere Talon, Sand Castle, War Paint, Whetstone, Fragrant Mushroom, Lost Coffer) | what every eligible deck card would become, the reward cards you will be given or offered (upgrade rolls included), the potions you get, before you pick it |
+| A rest-site option (Dig) or an event option with a random outcome (Endless Conveyor's random upgrade / potion / transform dishes, The Legends Were True / Potion Courier / Wellspring random potions, Punch-Off / Round Tea Party / Wongo's bargain bin / Trash Heap / Doll Room random relics, Infested Automaton / Fried Eel / Trash Heap random cards, Reflections / Tablet of Truth / Doors of Light and Dark random upgrades, Wongo's random downgrade, Slippery Bridge's next card, the transform options of Aroma of Chaos, Whispering Hollow, Symbiote, Morphic Grove, Trial, and every "obtain a random relic" option: This or That, Ranwid the Elder, Unrest Site, Luminous Choir, the Trial's merchant, Neow's Large Capsule) | which card gets upgraded, which potion or relic you get, what each deck card would become |
+
+**F8** toggles the mod. Predictions refresh a few times per second while hovered, so if a relic or power consumes
+the same RNG stream first, the display corrects itself immediately. Singleplayer.
+
+Verified in-game on v0.107.1 by a built-in self-test (`logs\RngPredictor.selftest`) and shadow verification of
+the game's own generators (`logs\RngPredictor.verify`); see [RngPredictor/DOCUMENTATION.md](RngPredictor/DOCUMENTATION.md).
 
 ---
 
@@ -107,11 +169,12 @@ To create a `.pck` file for code-only mods, use PCK Explorer or `create_pck.py` 
 ```
 STS2Mods/
   UndoAndRedo/          Combat undo/redo (Left/Right Arrow)
-    UndoAndRedoMod.cs     Entry point, input handling, visual refresh
-    CombatSnapshot.cs     State capture & restore
-    UndoAndRedo.json      External manifest (0.99+)
-    mod_manifest.json     Internal manifest (inside .pck)
-    DOCUMENTATION.md      Full technical documentation
+    UndoAndRedoMod.cs       Entry point, input handling, Harmony patches
+    ReplayRecorder.cs       Tracks the game's replay event stream, action ids, checksums
+    RewindEngine.cs         Rebuild + replay orchestration (undo/redo)
+    SelfTest.cs             Automated end-to-end test
+    UndoAndRedo.json        Manifest (DLL only)
+    DOCUMENTATION.md        Design documentation
   QuickRestart/         Quick restart (F5)
     QuickRestartMod.cs    Entry point, restart logic
     QuickRestart.json     External manifest (0.99+)
@@ -124,6 +187,16 @@ STS2Mods/
     UpgradeAllCardsMod.cs Harmony patches
     UpgradeAllCards.json  External manifest (0.99+)
     mod_manifest.json     Internal manifest (inside .pck)
+  RngPredictor/         Random-outcome preview on hover (F8 toggles)
+    RngPredictorMod.cs    Entry point, Harmony hooks (card holder / potion / pile focus, transform screen)
+    PredictionManager.cs  Hover state, periodic recompute, overlay driving
+    Predictors.cs         One predictor per card / potion / transform / shuffle
+    Sim.cs                Side-effect-free mirrors of the game's random generators on a cloned Rng
+    Overlay.cs            Godot overlay (NCard rows, text, enemy target markers)
+    Verify.cs             Shadow verification of the game's generators (logs/RngPredictor.verify)
+    SelfTest.cs           End-to-end in-game test (logs/RngPredictor.selftest)
+    RngPredictor.json     Manifest (DLL only)
+    DOCUMENTATION.md      Design notes
 ```
 
 ## Technology
